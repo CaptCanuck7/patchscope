@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(D:/patchscope/.venv/Scripts/python.exe:*)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_patch_parser.py -v -m \"not integration\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -v -m \"not integration\")"
+    ]
+  }
+}

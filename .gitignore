@@ -1,0 +1,17 @@
+.env
+*.pem
+*.key
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+*.egg-info/
+
+.idea/
+.vscode/
+Thumbs.db
+
+reports/
+*.result.json
