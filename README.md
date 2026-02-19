@@ -63,6 +63,47 @@ PatchScope uses a multi-agent AI pipeline to:
                     └─────────────────────────────────────┘
 ```
 
+### Implemented Agents
+
+#### Agent 1: Patch Parser (`patchscope/agents/patch_parser.py`)
+Fetches and analyzes CVE security patches from NVD and GitHub.
+
+| Tool | Purpose |
+|------|---------|
+| `nvd_lookup` | Query NVD for CVE metadata and reference URLs |
+| `search_github_commits` | Free-text commit search on GitHub |
+| `fetch_commit` | Fetch and parse a GitHub commit diff with quality assessment |
+| `search_github_advisories` | Query GitHub Advisory DB for fix commits |
+| `fetch_related_commits` | Get ancestor commits for additional context |
+
+**Output:** CVE metadata, files changed, functions modified, bug class classification, severity, confidence score.
+
+#### Agent 2: Reachability Analyzer (`patchscope/agents/reachability_analyzer.py`)
+Determines whether vulnerable code is reachable from external/untrusted input.
+
+| Tool | Purpose |
+|------|---------|
+| `analyze_call_graph` | Find direct callers of the vulnerable function |
+| `detect_entry_points` | Find public interfaces (HTTP handlers, syscalls, etc.) |
+| `trace_data_flow` | Find call chain between entry point and vulnerable function |
+| `detect_auth_gates` | Check files for authentication/authorization barriers |
+
+**Output:** Reachability verdict, entry points, shortest call path, auth gates, attack surface classification.
+
+#### Agent 3: Complexity Assessor (`patchscope/agents/complexity_assessor.py`)
+Evaluates how difficult exploitation would be, with dynamic tool selection based on vulnerability type.
+
+| Tool | Purpose |
+|------|---------|
+| `exploit_db_search` | Search Exploit-DB for known public exploits |
+| `poc_search` | Search GitHub repos and Metasploit for PoC code |
+| `memory_protection_analyzer` | Assess ASLR/DEP/stack canary bypass requirements |
+| `prerequisite_extractor` | Extract exploitation prerequisites from patch context |
+
+**Dynamic routing:** memory_corruption → memory protection analysis first; injection → payload constraint analysis; race_condition → timing analysis.
+
+**Output:** Exploitation complexity rating (low/medium/high/very_high), prerequisites, attacker requirements, memory protection bypass needs, public exploit availability, exploitation reliability, confidence score.
+
 ### Agentic Flow
 
 | Feature | Description |
