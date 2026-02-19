@@ -323,7 +323,7 @@ def prerequisite_extractor(
     patch_content: str,
     cve_description: str = "",
     attack_surface: str = "",
-    auth_gates: list[dict] | None = None,
+    auth_gates_description: str = "",
 ) -> dict:
     """Extract exploitation prerequisites from patch context and CVE metadata.
 
@@ -335,7 +335,8 @@ def prerequisite_extractor(
         patch_content: Raw patch/diff text from the commit.
         cve_description: CVE description from NVD (if available).
         attack_surface: Attack surface from Agent 2 (e.g. "local", "network").
-        auth_gates: Authentication gates from Agent 2 (if any).
+        auth_gates_description: Summary of authentication gates from Agent 2,
+            e.g. "capable(CAP_NET_ADMIN), nfnl_lock". Empty string if none.
 
     Returns:
         Dict with prerequisites list, attacker_requirements, user_interaction,
@@ -377,9 +378,8 @@ def prerequisite_extractor(
         access_level = "local"
 
     authentication = "none"
-    if auth_gates:
-        if any(g.get("has_auth_gate") or g.get("mechanism") for g in auth_gates):
-            authentication = "single"
+    if auth_gates_description:
+        authentication = "single"
     elif "authentication" in matched_categories:
         authentication = "single"
 
@@ -452,7 +452,7 @@ You receive output from previous agents containing:
 | `exploit_db_search(cve_id)` | Search Exploit-DB for known public exploits. |
 | `poc_search(cve_id)` | Search GitHub repos and Metasploit for PoC code. |
 | `memory_protection_analyzer(bug_class, patch_content, architecture)` | Assess ASLR/DEP/canary implications. |
-| `prerequisite_extractor(bug_class, patch_content, cve_description, attack_surface, auth_gates)` | Extract exploitation prerequisites. |
+| `prerequisite_extractor(bug_class, patch_content, cve_description, attack_surface, auth_gates_description)` | Extract exploitation prerequisites. |
 
 ## Reasoning Pattern (ReAct)
 

@@ -193,10 +193,9 @@ class TestPrerequisiteExtractor:
         assert result["attacker_requirements"]["access_level"] == "local"
 
     def test_auth_gates_set_authentication(self):
-        auth_gates = [{"has_auth_gate": True, "mechanism": "capable(CAP_NET_ADMIN)"}]
         result = prerequisite_extractor(
             "memory_corruption", "kfree(ptr);",
-            auth_gates=auth_gates,
+            auth_gates_description="capable(CAP_NET_ADMIN)",
         )
         assert result["attacker_requirements"]["authentication"] == "single"
 
