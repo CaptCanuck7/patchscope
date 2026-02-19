@@ -196,13 +196,17 @@ def search_advisories(cve_id: str) -> dict:
         vulnerabilities = []
         for vuln in adv.get("vulnerabilities", []) or []:
             pkg = vuln.get("package", {}) or {}
+            fpv = vuln.get("first_patched_version")
+            # REST API returns first_patched_version as a string; GraphQL returns a dict
+            if isinstance(fpv, dict):
+                patched_version = fpv.get("identifier", "")
+            else:
+                patched_version = fpv or ""
             vulnerabilities.append({
                 "ecosystem": pkg.get("ecosystem", ""),
                 "name": pkg.get("name", ""),
                 "vulnerable_range": vuln.get("vulnerable_version_range", ""),
-                "patched_version": (
-                    (vuln.get("first_patched_version") or {}).get("identifier", "")
-                ),
+                "patched_version": patched_version,
             })
 
         advisories.append({

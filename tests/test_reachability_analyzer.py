@@ -22,11 +22,10 @@ from patchscope.tools.code_search import (
     search_function_callers,
     search_entry_points,
 )
-from patchscope.tools.static_analysis import (
+from patchscope.tools.static_analyzer import (
     build_call_graph,
     find_entry_points_in_repo,
-    clone_repo,
-    cleanup_clone,
+    get_or_clone_repo,
 )
 from patchscope.agents.reachability_analyzer import _detect_patterns_in_content
 
@@ -539,7 +538,7 @@ class TestBuildCallGraphJava:
 
     def test_finds_java_callers(self):
         result = build_call_graph(self.repo, "Java", "deactivateSet")
-        assert result["analysis_method"] == "tree_sitter_java"
+        assert result["analysis_method"] == "javalang"
         functions = {c["function"] for c in result["callers"]}
         assert "createTable" in functions
         assert "cleanup" in functions
@@ -655,7 +654,7 @@ class TestFindEntryPointsInRepo:
 class TestCloneAndAnalyzeCallGraph:
     """clone_and_analyze_call_graph tool — mocking the clone step."""
 
-    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    @patch("patchscope.agents.reachability_analyzer.get_or_clone_repo")
     @patch("patchscope.agents.reachability_analyzer.build_call_graph")
     def test_returns_callers_and_repo_path(self, mock_build, mock_clone):
         mock_clone.return_value = "/tmp/fake_clone"
@@ -673,7 +672,7 @@ class TestCloneAndAnalyzeCallGraph:
         assert result["repo_path"] == "/tmp/fake_clone"
         assert result["analysis_method"] == "python_ast"
 
-    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    @patch("patchscope.agents.reachability_analyzer.get_or_clone_repo")
     def test_clone_failure_returns_error(self, mock_clone):
         mock_clone.side_effect = RuntimeError("git clone timed out")
         result = clone_and_analyze_call_graph(
@@ -696,7 +695,7 @@ class TestCloneAndAnalyzeCallGraph:
 class TestFindEntryPointsStaticTool:
     """find_entry_points_static tool — mocking the clone step."""
 
-    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    @patch("patchscope.agents.reachability_analyzer.get_or_clone_repo")
     @patch("patchscope.agents.reachability_analyzer.find_entry_points_in_repo")
     def test_fresh_clone_returns_entry_points(self, mock_find, mock_clone):
         mock_clone.return_value = "/tmp/fake_clone"
@@ -720,7 +719,7 @@ class TestFindEntryPointsStaticTool:
         assert result["entry_point_count"] == 1
         mock_find.assert_called_once_with("/tmp/existing", "Python")
 
-    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    @patch("patchscope.agents.reachability_analyzer.get_or_clone_repo")
     def test_clone_failure_returns_error(self, mock_clone):
         mock_clone.side_effect = RuntimeError("network error")
         result = find_entry_points_static("owner/repo", "Python")
@@ -750,4 +749,4 @@ class TestIntegrationStaticAnalysis:
                     print(f"    {c['function']} in {c['file']}:{c['line']}")
         finally:
             if "repo_path" in result:
-                cleanup_clone(result["repo_path"])
+                print(f"    Cached clone at: {result['repo_path']}")
