@@ -9,6 +9,12 @@ dependencies = [
     "google-adk>=1.0.0",
     "requests>=2.31.0",
     "python-dotenv>=1.0.0",
+    # Static analysis for Agent 2 reachability tools
+    "tree-sitter>=0.25.0",
+    "tree-sitter-python>=0.25.0",
+    "tree-sitter-java>=0.23.0",
+    "tree-sitter-c>=0.24.0",
+    "javalang>=0.13.0",
 ]
 
 [project.optional-dependencies]

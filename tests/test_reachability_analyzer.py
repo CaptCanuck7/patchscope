@@ -1,11 +1,18 @@
 """Tests for the Reachability Analyzer agent tools and branching logic."""
 
-import pytest
+import os
+import shutil
+import tempfile
+from pathlib import Path
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 from patchscope.agents.reachability_analyzer import (
     analyze_call_graph,
+    clone_and_analyze_call_graph,
     detect_entry_points,
+    find_entry_points_static,
     trace_data_flow,
     detect_auth_gates,
 )
@@ -15,7 +22,76 @@ from patchscope.tools.code_search import (
     search_function_callers,
     search_entry_points,
 )
+from patchscope.tools.static_analysis import (
+    build_call_graph,
+    find_entry_points_in_repo,
+    clone_repo,
+    cleanup_clone,
+)
 from patchscope.agents.reachability_analyzer import _detect_patterns_in_content
+
+
+# ---------------------------------------------------------------------------
+# Helpers: temporary repos with known source files
+# ---------------------------------------------------------------------------
+
+def _make_python_repo() -> str:
+    """Create a temp directory with Python source resembling a real repo."""
+    tmp = tempfile.mkdtemp(prefix="test_repo_py_")
+    (Path(tmp) / "handler.py").write_text(
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n\n"
+        "@app.route('/api/items')\n"
+        "def list_items():\n"
+        "    return process_items()\n\n"
+        "def process_items():\n"
+        "    return vulnerable_func(data)\n"
+    )
+    (Path(tmp) / "core.py").write_text(
+        "def vulnerable_func(data):\n"
+        "    return data\n\n"
+        "def helper():\n"
+        "    vulnerable_func(None)\n"
+    )
+    return tmp
+
+
+def _make_java_repo() -> str:
+    """Create a temp directory with Java source resembling a Spring app."""
+    tmp = tempfile.mkdtemp(prefix="test_repo_java_")
+    (Path(tmp) / "TableController.java").write_text(
+        "import org.springframework.web.bind.annotation.*;\n"
+        "public class TableController {\n"
+        "    @PostMapping(\"/tables\")\n"
+        "    public void createTable(String name) {\n"
+        "        deactivateSet(name);\n"
+        "    }\n"
+        "    private void cleanup() {\n"
+        "        deactivateSet(null);\n"
+        "    }\n"
+        "    public static void main(String[] args) {}\n"
+        "}\n"
+    )
+    return tmp
+
+
+def _make_c_repo() -> str:
+    """Create a temp directory with C source resembling a kernel module."""
+    tmp = tempfile.mkdtemp(prefix="test_repo_c_")
+    (Path(tmp) / "nf_tables.c").write_text(
+        "#include <linux/netfilter.h>\n\n"
+        "static int nf_tables_delset(struct nft_ctx *ctx) {\n"
+        "    return nft_set_deactivate(ctx);\n"
+        "}\n\n"
+        "static int nfnetlink_rcv_msg(struct sk_buff *skb) {\n"
+        "    return nf_tables_delset(NULL);\n"
+        "}\n\n"
+        "SYSCALL_DEFINE2(socket, int, family, int, type)\n"
+        "{\n"
+        "    return sock_create(family, type);\n"
+        "}\n"
+    )
+    return tmp
 
 
 # =====================================================================
@@ -407,3 +483,271 @@ class TestIntegrationReachability:
         if auth_result["has_auth_gate"]:
             for m in auth_result["auth_mechanisms"]:
                 print(f"    - {m['label']}: {m['line']}")
+
+
+# =====================================================================
+# Static analysis unit tests  (no network required)
+# =====================================================================
+
+class TestBuildCallGraphPython:
+    """build_call_graph with Python source using stdlib ast."""
+
+    def setup_method(self):
+        self.repo = _make_python_repo()
+
+    def teardown_method(self):
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_finds_direct_callers(self):
+        result = build_call_graph(self.repo, "Python", "vulnerable_func")
+        assert result["analysis_method"] == "python_ast"
+        functions = {c["function"] for c in result["callers"]}
+        assert "process_items" in functions
+        assert "helper" in functions
+
+    def test_call_sites_have_line_numbers(self):
+        result = build_call_graph(self.repo, "Python", "vulnerable_func")
+        for site in result["call_sites"]:
+            assert "line" in site
+            assert isinstance(site["line"], int)
+            assert site["line"] > 0
+
+    def test_unrelated_function_not_in_callers(self):
+        result = build_call_graph(self.repo, "Python", "vulnerable_func")
+        functions = {c["function"] for c in result["callers"]}
+        assert "list_items" not in functions  # list_items calls process_items, not vulnerable_func
+
+    def test_no_callers_returns_empty(self):
+        result = build_call_graph(self.repo, "Python", "totally_missing_xyz")
+        assert result["callers"] == []
+        assert result["call_sites"] == []
+        assert result["files_analyzed"] > 0
+
+    def test_files_analyzed_count(self):
+        result = build_call_graph(self.repo, "Python", "vulnerable_func")
+        assert result["files_analyzed"] == 2
+
+
+class TestBuildCallGraphJava:
+    """build_call_graph with Java source using tree-sitter-java."""
+
+    def setup_method(self):
+        self.repo = _make_java_repo()
+
+    def teardown_method(self):
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_finds_java_callers(self):
+        result = build_call_graph(self.repo, "Java", "deactivateSet")
+        assert result["analysis_method"] == "tree_sitter_java"
+        functions = {c["function"] for c in result["callers"]}
+        assert "createTable" in functions
+        assert "cleanup" in functions
+
+    def test_java_call_sites_have_lines(self):
+        result = build_call_graph(self.repo, "Java", "deactivateSet")
+        assert len(result["call_sites"]) == 2
+        for site in result["call_sites"]:
+            assert site["line"] > 0
+
+    def test_java_no_callers_for_unknown(self):
+        result = build_call_graph(self.repo, "Java", "doesNotExist")
+        assert result["callers"] == []
+
+    def test_java_files_analyzed(self):
+        result = build_call_graph(self.repo, "Java", "deactivateSet")
+        assert result["files_analyzed"] == 1
+
+
+class TestBuildCallGraphC:
+    """build_call_graph with C source using tree-sitter-c."""
+
+    def setup_method(self):
+        self.repo = _make_c_repo()
+
+    def teardown_method(self):
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_finds_c_caller(self):
+        result = build_call_graph(self.repo, "C", "nft_set_deactivate")
+        assert result["analysis_method"] == "tree_sitter_c"
+        functions = {c["function"] for c in result["callers"]}
+        assert "nf_tables_delset" in functions
+
+    def test_c_call_site_line_number(self):
+        result = build_call_graph(self.repo, "C", "nft_set_deactivate")
+        assert len(result["call_sites"]) == 1
+        assert result["call_sites"][0]["line"] == 4
+
+    def test_c_no_callers_for_unknown(self):
+        result = build_call_graph(self.repo, "C", "unknown_func_xyz")
+        assert result["callers"] == []
+
+    def test_unsupported_language_returns_error(self):
+        result = build_call_graph(self.repo, "Go", "some_func")
+        assert result["analysis_method"] == "unsupported"
+        assert "error" in result
+
+
+class TestFindEntryPointsInRepo:
+    """find_entry_points_in_repo across all three languages."""
+
+    def test_python_http_route_detected(self):
+        repo = _make_python_repo()
+        try:
+            eps = find_entry_points_in_repo(repo, "Python")
+            types = {ep["type"] for ep in eps}
+            assert "http_route" in types
+            names = {ep["function"] for ep in eps}
+            assert "list_items" in names
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def test_java_spring_endpoint_detected(self):
+        repo = _make_java_repo()
+        try:
+            eps = find_entry_points_in_repo(repo, "Java")
+            types = {ep["type"] for ep in eps}
+            assert "http_endpoint" in types
+            names = {ep["function"] for ep in eps}
+            assert "createTable" in names
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def test_java_main_detected(self):
+        repo = _make_java_repo()
+        try:
+            eps = find_entry_points_in_repo(repo, "Java")
+            types = {ep["type"] for ep in eps}
+            assert "main_entry" in types
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def test_c_syscall_detected(self):
+        repo = _make_c_repo()
+        try:
+            eps = find_entry_points_in_repo(repo, "C")
+            types = {ep["type"] for ep in eps}
+            assert "syscall_handler" in types
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def test_c_netlink_handler_detected(self):
+        repo = _make_c_repo()
+        try:
+            eps = find_entry_points_in_repo(repo, "C")
+            types = {ep["type"] for ep in eps}
+            assert "netlink_handler" in types
+            names = {ep["function"] for ep in eps}
+            assert "nfnetlink_rcv_msg" in names
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def test_unsupported_language_returns_empty(self):
+        repo = _make_python_repo()
+        try:
+            eps = find_entry_points_in_repo(repo, "Rust")
+            assert eps == []
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+
+class TestCloneAndAnalyzeCallGraph:
+    """clone_and_analyze_call_graph tool — mocking the clone step."""
+
+    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    @patch("patchscope.agents.reachability_analyzer.build_call_graph")
+    def test_returns_callers_and_repo_path(self, mock_build, mock_clone):
+        mock_clone.return_value = "/tmp/fake_clone"
+        mock_build.return_value = {
+            "callers": [{"function": "foo", "class": None, "file": "a.py", "line": 10}],
+            "call_sites": [{"file": "a.py", "line": 10, "expression": "target_func()"}],
+            "files_analyzed": 5,
+            "analysis_method": "python_ast",
+        }
+        result = clone_and_analyze_call_graph(
+            "owner/repo", "target_func", "Python"
+        )
+        assert result["caller_count"] == 1
+        assert result["callers"][0]["function"] == "foo"
+        assert result["repo_path"] == "/tmp/fake_clone"
+        assert result["analysis_method"] == "python_ast"
+
+    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    def test_clone_failure_returns_error(self, mock_clone):
+        mock_clone.side_effect = RuntimeError("git clone timed out")
+        result = clone_and_analyze_call_graph(
+            "owner/repo", "target_func", "Python"
+        )
+        assert "error" in result
+        assert result["caller_count"] == 0
+        assert result["analysis_method"] == "clone_failed"
+
+    def test_unsupported_language_skips_clone(self):
+        # Should return immediately without calling clone_repo
+        result = clone_and_analyze_call_graph(
+            "owner/repo", "target_func", "Go"
+        )
+        assert result["analysis_method"] == "unsupported"
+        assert "error" in result
+        assert result["caller_count"] == 0
+
+
+class TestFindEntryPointsStaticTool:
+    """find_entry_points_static tool — mocking the clone step."""
+
+    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    @patch("patchscope.agents.reachability_analyzer.find_entry_points_in_repo")
+    def test_fresh_clone_returns_entry_points(self, mock_find, mock_clone):
+        mock_clone.return_value = "/tmp/fake_clone"
+        mock_find.return_value = [
+            {"function": "main", "file": "Main.java", "line": 5, "type": "main_entry"},
+        ]
+        result = find_entry_points_static("owner/repo", "Java")
+        assert result["entry_point_count"] == 1
+        assert result["entry_points"][0]["function"] == "main"
+        assert result["repo_path"] == "/tmp/fake_clone"
+
+    @patch("patchscope.agents.reachability_analyzer.find_entry_points_in_repo")
+    def test_reuses_existing_repo_path(self, mock_find):
+        """When repo_path is provided, no clone is performed."""
+        mock_find.return_value = [
+            {"function": "handler", "file": "h.py", "line": 1, "type": "http_route"},
+        ]
+        result = find_entry_points_static(
+            "owner/repo", "Python", repo_path="/tmp/existing"
+        )
+        assert result["entry_point_count"] == 1
+        mock_find.assert_called_once_with("/tmp/existing", "Python")
+
+    @patch("patchscope.agents.reachability_analyzer.clone_repo")
+    def test_clone_failure_returns_error(self, mock_clone):
+        mock_clone.side_effect = RuntimeError("network error")
+        result = find_entry_points_static("owner/repo", "Python")
+        assert "error" in result
+        assert result["entry_point_count"] == 0
+
+
+# =====================================================================
+# Integration test — real clone + static analysis (requires network + git)
+# =====================================================================
+
+@pytest.mark.integration
+class TestIntegrationStaticAnalysis:
+    """Static analysis with a real GitHub clone."""
+
+    def test_static_call_graph_linux_nft_set_deactivate(self):
+        """CVE-2023-32233: build real call graph for nft_set_deactivate."""
+        result = clone_and_analyze_call_graph(
+            "torvalds/linux", "nft_set_deactivate", "C",
+        )
+        try:
+            assert result["analysis_method"] in ("tree_sitter_c", "clone_failed")
+            if result["analysis_method"] == "tree_sitter_c":
+                assert result["caller_count"] > 0
+                print(f"\n  Static callers of nft_set_deactivate: {result['caller_count']}")
+                for c in result["callers"][:5]:
+                    print(f"    {c['function']} in {c['file']}:{c['line']}")
+        finally:
+            if "repo_path" in result:
+                cleanup_clone(result["repo_path"])
